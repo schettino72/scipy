@@ -115,12 +115,15 @@ from dataclasses import dataclass
 import click
 from click import Parameter, Option, Argument
 from click.globals import get_current_context
+from rich.console import Console
 from rich_click import RichCommand, RichGroup
-from doit import task_params
+from doit import task_params, create_after
 from doit.task import Task as DoitTask
 from doit.cmd_base import ModuleTaskLoader
 from doit.api import run_tasks
 from pydevtool.cli import UnifiedContext, CliGroup, Task
+from pydevtool.reporter import custom_theme, DoitRichReporter
+from pydevtool.lint_flake8 import LintFlake8
 from rich_click import rich_click
 
 DOIT_CONFIG = {
@@ -129,6 +132,8 @@ DOIT_CONFIG = {
 }
 
 
+CONSOLE = Console(theme=custom_theme)
+REPORTER = DoitRichReporter(CONSOLE)
 
 rich_click.STYLE_ERRORS_SUGGESTION = "yellow italic"
 rich_click.SHOW_ARGUMENTS = True
@@ -201,14 +206,15 @@ CONTEXT = UnifiedContext({
 })
 
 
-def run_doit_task(tasks):
+def run_doit_task(tasks, reporter='zero'):
     """
       :param tasks: (dict) task_name -> {options}
     """
     loader = ModuleTaskLoader(globals())
     doit_config = {
         'verbosity': 2,
-        'reporter': 'zero',
+        'reporter': reporter,
+        'continue': True,
     }
     return run_tasks(loader, tasks, extra_config={'GLOBAL': doit_config})
 
@@ -794,6 +800,45 @@ class Lint():
     def run(output_file):
         opts = {'output_file': output_file}
         run_doit_task({'flake8': opts, 'pep8-diff': {}})
+
+
+# class FakeConsole():
+#     @staticmethod
+#     def print(*args, **kwargs):
+#         print(*args, **kwargs)
+# CONSOLE = FakeConsole()
+#############################
+@create_after()  # FIXME: put this inside class API
+def task_lint2():
+    linter = LintFlake8(CONSOLE, config_file='tox.ini')
+    count = 0
+    # flake8 does not even create checker for excluded paths.
+    # Adjust pattern for dir path adding '*': scipy/_lib/highs => scipy/_lib/highs/*
+    linter.app.file_checker_manager.exclude = [
+        p if p.endswith('.py') else f'{p}/*'
+        for p in linter.app.file_checker_manager.exclude]
+    for fn in Path("scipy").rglob('*.py'):  # FIXME + benchmark
+        if linter.excluded(fn):
+            continue
+        count += 1
+        yield {
+            'name': fn,
+            'actions': [(linter, [fn])],
+            'file_dep': [fn],
+        }
+    REPORTER.add_progress_bar('lint2', count)
+
+@cli.cls_cmd('lint2')
+class Lint2():
+    """:dash: run flake8, and check PEP 8 compliance on branch diff."""
+    # FIXME: take output-file into account
+    output_file = Option(
+        ['--output-file'], default=None, help='Redirect report to a file')
+
+    def run(output_file):
+        opts = {'output_file': output_file}
+        run_doit_task({'lint2': {}}, reporter=REPORTER)
+##################################
 
 
 @cli.cls_cmd('mypy')
