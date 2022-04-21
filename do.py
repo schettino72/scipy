@@ -587,7 +587,7 @@ class Test(Task):
     Examples:
 
     $ python do.py test -s {SAMPLE_SUBMODULE}
-    $ pythod do.py test scipy.optimize.tests.test_minimize_constrained
+    $ python do.py test -t scipy.optimize.tests.test_minimize_constrained
     $ python do.py test -s stats -- --tb=line
     """
     ctx = CONTEXT
