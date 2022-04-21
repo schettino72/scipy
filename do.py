@@ -97,7 +97,6 @@ class RefguideCheck(Task):
 import os
 import subprocess
 import sys
-import re
 import shutil
 import json
 import datetime
@@ -113,14 +112,15 @@ from types import ModuleType as new_module
 from dataclasses import dataclass
 
 import click
-from click import Parameter, Option, Argument
-from click.globals import get_current_context
-from rich_click import RichCommand, RichGroup
+from click import Option, Argument
 from doit import task_params
-from doit.task import Task as DoitTask
 from doit.cmd_base import ModuleTaskLoader
 from doit.api import run_tasks
+from doit.reporter import ZeroReporter
 from pydevtool.cli import UnifiedContext, CliGroup, Task
+from rich.console import Console
+from rich.theme import Theme
+from rich.panel import Panel
 from rich_click import rich_click
 
 DOIT_CONFIG = {
@@ -128,6 +128,22 @@ DOIT_CONFIG = {
     'minversion': '0.35.0',
 }
 
+
+console_theme = Theme({
+    "stage": "bold bright_cyan",
+    "cmd": "italic gray50",
+    "info": "bold bright_magenta",
+    "warn": "bold yellow",
+    "success": "bold green",
+})
+
+
+class EMOJI:
+    stage = ":play_button: "
+    cmd = ":computer:"
+    info = ":information:"
+    warn = ":heavy_exclamation_mark:"
+    success = ":white_heavy_check_mark:"
 
 
 rich_click.STYLE_ERRORS_SUGGESTION = "yellow italic"
@@ -185,6 +201,23 @@ rich_click.COMMAND_GROUPS = {
 }
 
 
+class ErrorOnlyReporter(ZeroReporter):
+    desc = """Report only errors internal or TaskError, TaskFailures are not reported"""
+
+    def runtime_error(self, msg):
+        console = Console()
+        console.print("[red bold] msg")
+
+    def add_failure(self, task, exception):
+        console = Console()
+        console.print(Panel(
+            "".join(exception.traceback),
+            title=f"{task.name}",
+            subtitle=exception.message,
+            border_style="red",
+        ))
+
+
 CONTEXT = UnifiedContext({
     'build_dir': Option(
         ['--build-dir'], metavar='BUILD_DIR',
@@ -208,7 +241,7 @@ def run_doit_task(tasks):
     loader = ModuleTaskLoader(globals())
     doit_config = {
         'verbosity': 2,
-        'reporter': 'zero',
+        'reporter': ErrorOnlyReporter,
     }
     return run_tasks(loader, tasks, extra_config={'GLOBAL': doit_config})
 
@@ -230,7 +263,6 @@ def cli(ctx, **kwargs):
     **python do.py --build-dir my-build test -s stats**
     """
     CLI.update_context(ctx, kwargs)
-
 
 
 PROJECT_MODULE = "scipy"
@@ -348,10 +380,12 @@ class Build(Task):
         """
         Setting up meson-build
         """
+        cls.console.print(f"{EMOJI.stage} [stage]Meson Build: setup")
         for fn in PROJECT_ROOT_FILES:
             if not (dirs.root / fn).exists():
-                print("To build the project, run dev.py in "
-                      "git checkout or unpacked source")
+                cls.console.print(
+                    f"{EMOJI.warn} [warn] To build the project,"
+                    " run dev.py in git checkout or unpacked source.")
                 sys.exit(1)
 
         env = dict(os.environ)
@@ -377,17 +411,20 @@ class Build(Task):
                 cmd = ["meson", "--reconfigure",
                        "--prefix", str(dirs.installed)]
             else:
+                cls.console.print(f"{EMOJI.info} [info] Using existing setup.")
                 return
         if args.werror:
             cmd += ["--werror"]
         if args.gcov:
             cmd += ['-Db_coverage=true']
         # Setting up meson build
+        cmd_str = ' '.join([str(p) for p in cmd])
+        cls.console.print(f"{EMOJI.cmd} [cmd] {cmd_str}")
         ret = subprocess.call(cmd, env=env, cwd=run_dir)
         if ret == 0:
-            print("Meson build setup OK")
+            cls.console.print(f"{EMOJI.success} [success] Meson build setup OK")
         else:
-            print("Meson build setup failed! ({0} elapsed)")
+            cls.console.print(f"{EMOJI.warn} [warn] Meson build setup failed! ({0} elapsed)")
             sys.exit(1)
         return env
 
@@ -396,17 +433,20 @@ class Build(Task):
         """
         Build a dev version of the project.
         """
+        cls.console.print(f"{EMOJI.stage} [stage]Meson Build: compile")
         cmd = ["ninja", "-C", str(dirs.build)]
         if args.parallel > 1:
             cmd += ["-j", str(args.parallel)]
 
         # Building with ninja-backend
+        cmd_str = ' '.join([str(p) for p in cmd])
+        cls.console.print(f"{EMOJI.cmd} [cmd] {cmd_str}")
         ret = subprocess.call(cmd, env=env, cwd=dirs.root)
 
         if ret == 0:
-            print("Build OK")
+            cls.console.print(f"{EMOJI.success} [success] Build OK")
         else:
-            print("Build failed!")
+            cls.console.print(f"{EMOJI.warn} [warn] Build failed!")
             sys.exit(1)
 
     @classmethod
@@ -414,6 +454,7 @@ class Build(Task):
         """
         Installs the project after building.
         """
+        cls.console.print(f"{EMOJI.stage} [stage]Meson Build: install")
         if dirs.installed.exists():
             non_empty = len(os.listdir(dirs.installed))
             if non_empty and not dirs.site.exists():
@@ -422,10 +463,12 @@ class Build(Task):
         cmd = ["meson", "install", "-C", args.build_dir]
         log_filename = dirs.root / 'meson-install.log'
         start_time = datetime.datetime.now()
+        cmd_str = ' '.join([str(p) for p in cmd])
+        cls.console.print(f"{EMOJI.cmd} [cmd] {cmd_str}")
         if args.show_build_log:
             ret = subprocess.call(cmd, cwd=dirs.root)
         else:
-            print("Installing, see meson-install.log...")
+            cls.console.print(f"{EMOJI.info} [info] Installing, see meson-install.log...")
             with open(log_filename, 'w') as log:
                 p = subprocess.Popen(cmd, stdout=log, stderr=log,
                                      cwd=dirs.root)
@@ -458,14 +501,14 @@ class Build(Task):
             if not args.show_build_log:
                 with open(log_filename, 'r') as f:
                     print(f.read())
-            print("Installation failed! ({0} elapsed)".format(elapsed))
+            cls.console.print(f"{EMOJI.warn} [warn] Installation failed! ({elapsed} elapsed)")
             sys.exit(1)
 
         # ignore everything in the install directory.
         with open(dirs.installed / ".gitignore", "w") as f:
             f.write("*")
 
-        print("Installation OK")
+        cls.console.print(f"{EMOJI.success} [success] Installation OK")
         return
 
     @classmethod
@@ -516,9 +559,11 @@ class Build(Task):
         Args = namedtuple('Args', [k for k in kwargs.keys()])
         args = Args(**kwargs)
 
+        cls.console = Console(theme=console_theme)
         dirs = Dirs(args)
         if args.no_build:
-            print('Skipping build')
+            cls.console.print(f"{EMOJI.stage} [stage]Meson Build")
+            cls.console.print(f"{EMOJI.info} [info]Skipping build")
         else:
             env = cls.setup_build(dirs, args)
             cls.build_project(dirs, args, env)
