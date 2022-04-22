@@ -117,6 +117,7 @@ from doit import task_params
 from doit.cmd_base import ModuleTaskLoader
 from doit.api import run_tasks
 from doit.reporter import ZeroReporter
+from doit.exceptions import TaskError
 from pydevtool.cli import UnifiedContext, CliGroup, Task
 from rich.console import Console
 from rich.theme import Theme
@@ -202,20 +203,25 @@ rich_click.COMMAND_GROUPS = {
 
 
 class ErrorOnlyReporter(ZeroReporter):
-    desc = """Report only errors internal or TaskError, TaskFailures are not reported"""
+    desc = """Report errors only"""
 
     def runtime_error(self, msg):
         console = Console()
         console.print("[red bold] msg")
 
-    def add_failure(self, task, exception):
+    def add_failure(self, task, fail_info):
         console = Console()
-        console.print(Panel(
-            "".join(exception.traceback),
-            title=f"{task.name}",
-            subtitle=exception.message,
-            border_style="red",
-        ))
+        if fail_info.traceback:
+            console.print(Panel(
+                "".join(fail_info.traceback),
+                title=f"{task.name}",
+                subtitle=fail_info.message,
+                border_style="red",
+            ))
+        else:
+            label = 'Error' if isinstance(fail_info, TaskError) else 'Failed'
+            console.print(f'[red]Task {label} - {task.name}'
+                          f' => {fail_info.message}')
 
 
 CONTEXT = UnifiedContext({
@@ -422,9 +428,11 @@ class Build(Task):
         cls.console.print(f"{EMOJI.cmd} [cmd] {cmd_str}")
         ret = subprocess.call(cmd, env=env, cwd=run_dir)
         if ret == 0:
-            cls.console.print(f"{EMOJI.success} [success] Meson build setup OK")
+            cls.console.print(f"{EMOJI.success} [success]"
+                              " Meson build setup OK")
         else:
-            cls.console.print(f"{EMOJI.warn} [warn] Meson build setup failed! ({0} elapsed)")
+            cls.console.print(f"{EMOJI.warn} [warn]"
+                              f" Meson build setup failed!")
             sys.exit(1)
         return env
 
@@ -468,7 +476,8 @@ class Build(Task):
         if args.show_build_log:
             ret = subprocess.call(cmd, cwd=dirs.root)
         else:
-            cls.console.print(f"{EMOJI.info} [info] Installing, see meson-install.log...")
+            cls.console.print(f"{EMOJI.info} [info]"
+                              " Installing, see meson-install.log...")
             with open(log_filename, 'w') as log:
                 p = subprocess.Popen(cmd, stdout=log, stderr=log,
                                      cwd=dirs.root)
@@ -501,7 +510,8 @@ class Build(Task):
             if not args.show_build_log:
                 with open(log_filename, 'r') as f:
                     print(f.read())
-            cls.console.print(f"{EMOJI.warn} [warn] Installation failed! ({elapsed} elapsed)")
+            cls.console.print(f"{EMOJI.warn} [warn]"
+                              " Installation failed! ({elapsed} elapsed)")
             sys.exit(1)
 
         # ignore everything in the install directory.
