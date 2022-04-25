@@ -124,6 +124,8 @@ from doit.api import run_tasks
 from pydevtool.cli import UnifiedContext, CliGroup, Task
 from pydevtool.reporter import DoitRichReporter
 from pydevtool.lint_flake8 import LintFlake8
+from pydevtool.lint_pyflakes import LintPyflakes
+from pydevtool.lint_pycodestyle import LintCodeStyle
 from rich_click import rich_click
 
 DOIT_CONFIG = {
@@ -811,8 +813,15 @@ def task_flake8(output_file):
     opts = ''
     if output_file:
         opts += f'--output-file={output_file}'
+    # ignore = F401,F403,F405,F841
+    # 401 - UnusedImport: imported but unused
+    # 403 - ImportStartUsed: import *
+    # 405 - UdefinedLocal: name may be undefined, or defined from start imports
+    # 841 - UnusedVariable: local variable `name` is assigned to but never used
+    # paths = 'scipy benchmarks/benchmarks'
+    paths = 'scipy'
     return {
-        'actions': [f"flake8 {opts} scipy benchmarks/benchmarks"],
+        'actions': [f"flake8 {opts} {paths}"],
         'doc': 'Lint scipy and benchmarks directory',
     }
 
@@ -820,6 +829,8 @@ def task_flake8(output_file):
 def task_pep8diff():
     # Lint just the diff since branching off of main using a
     # stricter configuration.
+    # [flake8]
+    # per-file-ignores = */__init__.py:F401,F403
     return {
         'basename': 'pep8-diff',
         'actions': [str(Dirs().root / 'tools' / 'lint_diff.py')],
@@ -835,7 +846,7 @@ class Lint():
 
     def run(output_file):
         opts = {'output_file': output_file}
-        run_doit_task({'flake8': opts, 'pep8-diff': {}})
+        run_doit_task({'flake8': opts}) # , 'pep8-diff': {}})
 
 
 # class FakeConsole():
@@ -845,7 +856,7 @@ class Lint():
 # CONSOLE = FakeConsole()
 #############################
 @create_after()  # FIXME: put this inside class API
-def task_lint2():
+def task_doflake8():
     linter = LintFlake8(CONSOLE, config_file='tox.ini')
     count = 0
     # flake8 does not even create checker for excluded paths.
@@ -862,20 +873,73 @@ def task_lint2():
             'actions': [(linter, [fn])],
             'file_dep': [fn],
         }
-    REPORTER.add_progress_bar('lint2', count)
+    REPORTER.add_progress_bar('doflake8', count)
 
-@cli.cls_cmd('lint2')
-class Lint2():
-    """:dash: run flake8, and check PEP 8 compliance on branch diff."""
+@cli.cls_cmd('doflake8')
+class DoFlake8():
     # FIXME: take output-file into account
     output_file = Option(
         ['--output-file'], default=None, help='Redirect report to a file')
 
     def run(output_file):
         opts = {'output_file': output_file}
-        run_doit_task({'lint2': {}}, reporter=REPORTER)
+        run_doit_task({'doflake8': {}}, reporter=REPORTER)
+############
+
+
+@create_after()  # FIXME: put this inside class API
+def task_dopyflakes():
+    linter = LintPyflakes(CONSOLE, config_file='tox.ini', convert_flake8_code=True)
+    count = 0
+    # paths = "scipy"
+    paths = "scipy/sparse/linalg"
+    for fn in Path(paths).rglob('*.py'):  # FIXME + benchmark
+        count += 1
+        yield {
+            'name': fn,
+            'actions': [(linter, [fn])],
+             'file_dep': [fn],
+        }
+    REPORTER.add_progress_bar('dopyflakes', count)
+
+@cli.cls_cmd('dopyflakes')
+class DoPyflakes():
+    def run():
+        run_doit_task({'dopyflakes': {}}, reporter=REPORTER)
+
+
+@create_after()  # FIXME: put this inside class API
+def task_docodestyle():
+    linter = LintCodeStyle(CONSOLE, config_file='tox.ini')
+    count = 0
+    for fn in Path("scipy").rglob('*.py'):  # FIXME + benchmark
+        # if linter.excluded(fn):
+        #     continue
+        count += 1
+        yield {
+            'name': fn,
+            'actions': [(linter, [fn])],
+            'file_dep': [fn],
+        }
+    REPORTER.add_progress_bar('docodestyle', count)
+
+@cli.cls_cmd('docodestyle')
+class DoCodeStyle():
+    def run():
+        run_doit_task({'docodestyle': {}}, reporter=REPORTER)
+
+
+### Timing:             real (user)    | cmd
+# - flake8 (all cores): 0:21 (2:10)    | dev lint
+# - flake8 (-j 1):      1:03           | flake8 -j1 scipy
+# - devtool: flake8     1:09           | dev doflake8
+# - devtool: pyflakes   0:25           | dev dopyflakes
+# - devtool: codestyle  0:27           | dev docodestyle
 ##################################
 
+# TODO: pydevtool
+# codestyle exclude path
+# pyflakes ignore from inline noqa
 
 @cli.cls_cmd('mypy')
 class Mypy(Task):
